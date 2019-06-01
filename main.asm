@@ -1,198 +1,367 @@
 .include "m16def.inc"
 
-.def timecounter =	r20
 .def temp = r16
+.def overflow_counter = r21
+.def current_state = r22
+.def which_button = r23
+
+; Init stack pointer
+.macro init_stack
+	ldi @0, low(@1)
+	out spl, @0
+	ldi @0, high(@1)
+	out sph, @0
+.endmacro
+
+; Init Timer/Counter Register 1 with 0xf000 = 61440 
+; f=4MHz, prescaler=1024 MAX=65535
+; Thus the delay until overflow is (f - 61440) * prescaler / f = 1sec)
+.macro start_timer
+	ldi temp, 0xf0
+	out TCNT1H, temp
+	ldi temp, 0x00
+	out TCNT1L, temp
+.endmacro
 
 .dseg
 .org 0x100
+
 .cseg
-.org 0
-rjmp RESET
-.org 0x020
-rjmp InterruptHandler
+.org $0
+rjmp reset
+.org $20
+rjmp interrupt_handler
 
-RESET:
+reset:
+	init_stack temp, RAMEND
 
-	LDI	temp, low(RAMEND)
-	OUT	SPL, temp
-	LDI	temp, high(RAMEND)
-	OUT	SPH, temp					; Stack pointer to end of RAM
-
-	ldi temp, 0xFF
-	out DDRB,temp					;PORTB becomes output port
-	out PORTB,temp					;turn off all LEDS
-
-	ldi temp,0x00
-	out DDRD,temp					;PORTD input
-
+	; =============================
+	; Init PORTS
+	; =============================
+	; PORTA 
+	; Bits 0-3 input SW(A12,B12,C,F) & 4-7 output (F,C)
 	ldi temp, 0xF0
-	out DDRA,temp					;PORTA first 4 output last 4 input
+	out DDRA, temp
 	ldi temp, 0xFF
-	out DDRC,temp					;PORTC output
+	out PINA, temp
+
+	; PORTB
+	; Bits 0-5 input (FLOWS 2-3)				
+	ldi temp, 0x00
+	out DDRB, temp					
+	out PORTB, temp ; handle ISP issue
+
+	; PORTC 
+	; Bits 0-7 output (E-B-D-A)
+	ldi temp, 0xFF
+	out DDRC, temp					
+
+	; PORTD
+	; Bits 0-2 Input (FLOW 1)
+	; Bits 4-6 Output (Bit4 A12 and Bit5 B12)
+	ldi temp, 0b00110000
+	out DDRD, temp
+	ldi temp, 0x00
+	out PORTB, temp
+
+	; =============================
+	; Set up Timer1 
+	; =============================
+	start_timer
+
+	; Timer Overflow interrupt enable 
+	ldi temp, 1<<TOIE1			
+	out TIMSK, temp
+
+	; Devide clock by 1024 & Clear Timer/Counter Register on Compare Match
+	ldi temp, 0b00001101	
+	out TCCR1B, temp
+
+	; Enable Interrupts
+	sei	
+
+	ldi overflow_counter, 0
+	clr temp
+	clr current_state
+
+	ldi current_state, 1
+
+main:
+	rcall switch_current_state
+
+	rjmp main
+
+switch_current_state: 
+	cpi current_state, 0
+	breq  case_orange
+	cpi current_state, 1
+	breq case_state_1
+	cpi current_state, 2
+	breq case_state_2
+	cpi current_state, 3
+	breq case_state_3
+	cpi current_state, 4
+	breq case_state_4
+	cpi current_state, 5
+	breq case_state_5
+	ret
+
+case_orange:
+	rjmp load_state_orange		; open all the orange LEDS
+	; Handling next state here
+	;rjmp check_A12				; check if a SW is pressed, otherwise continue with the next state
+
+case_state_1:
+	rcall load_state_1
+	rjmp end_of_switch
+
+case_state_2:
+	rcall load_state_2
+	rjmp end_of_switch
+
+case_state_3:
+	rcall load_state_3
+	rjmp end_of_switch
+
+case_state_4:
+	rcall load_state_4
+	rjmp end_of_switch
+
+case_state_5:
+	rcall load_state_5
+	rjmp end_of_switch
+
+end_of_switch: 
+	; Light orange lights after each state ended
+	rjmp case_orange
+
+
+; ======================================================
+; Checking PULL UP buttons and calculate next state here
+; ======================================================
+in temp, PINA
+
+check_A12:
+	in temp, PINA
+	sbrs temp, 0 
+	rjmp set_state_2 				; is A12 pressed
+	rjmp check_B12					; above is skipped if A12 is not pressed
 	
-	ldi temp,16
-	out TCNT1H,temp
-	ldi temp,0
-	out TCNT1L,temp											
-	ldi temp,1<<TOIE1				;timer overflow interrupt enable 
-	out TIMSK,temp					
-	ldi temp,5						;clock prescaler=clk/1024 (256µsec) ~ 4000=1sec
-	out TCCR1B,temp
-	
-	sei								;enable global interrupts
-  
-;##############################################################
-;green=10,yellow=01,red=00,off=11
-;##PORTD 1,2,3 = Flow1
-;##PORTB 0,1,2 = Flow2
-;##PORTB 3,4,5 = Flow3
-;##001=flow a	010=flow b	100=flow c
 
-Loop_main:
+check_B12:
+	in temp, PINA
+	sbrs temp, 1
+	rjmp set_state_1 				; is B12 pressed
+	rjmp check_C1					; above is skipped if B12 is not pressed
 
-rcall pressedB
+check_C1:
+	in temp, PINA
+	sbrs temp, 2 
+	rjmp set_state_4 				; is C1 pressed
+	rjmp check_F1					; above is skipped if C1 is not pressed
 
-rjmp Loop_main
 
-rcall strofiF
-rcall delay3
+check_F1:
+	in temp, PINA
+	sbrs temp, 3 
+	rjmp set_state_3				; is F1 pressed
+	rjmp check_next_normal_state	; above is skipped if C1 is not pressed
 
-;E,B green ## All else red ##Pedestrians A green
-green_AO:
-	ldi temp, 0b10100000  ;PORTC fanaria E,B, D,A
+
+check_next_normal_state:
+	; Next state is 1 or B
+	cpi current_state, 1
+	breq set_state_2
+	rjmp set_state_1
+
+
+set_state_1:
+	ldi current_state, 1
+	rjmp main
+
+set_state_2:
+	ldi current_state, 2
+	rjmp main
+
+set_state_3:
+	ldi current_state, 3
+	rjmp main
+
+set_state_4:
+	ldi current_state, 4
+	rjmp main
+
+set_state_5:
+	ldi current_state, 5
+	rjmp main
+
+; ===================
+; Define some states:
+; ===================
+; state_1: A,D green 	B,C,E,F red 	& 	pedestrians A12 red 	B12 green
+; state_2: B,E green 	A,C,D,F red 	& 	pedestrians A12 green 	B12 red
+; state_3: E,F green 	A,B,C,D,F red 	& 	pedestrians A12 red 	B12 red
+; state_4: B,C green 	A,D,E,F red 	& 	pedestrians A12 green 	B12 red
+; state_5: F green 		A,B,C,D,E red 	& 	pedestrians A12 red 	B12 green
+
+load_state_orange:
+	ldi temp, 0b01010101  ; E,B red & D,A green
 	out PORTC,temp
-	ldi temp, 0b00001111  ;PORTA fanaria C kai F
+	ldi temp, 0b00001111  ; C,F red
 	out PORTA,temp
-	ldi temp, 0b11111001  ;PORTB pezoi A kai B
-	out PORTB,temp
-rcall delay3
-
-rcall  yellow_all
-rcall delay3
-
-red_AO:
-	ldi temp, 0b00001010  ;PORTC fanaria E,B, D,A
-	out PORTC,temp
-	ldi temp, 0b00001111  ;PORTA fanaria C kai F
-	out PORTA,temp
-	ldi temp, 0b11111001  ;PORTB pezoi A kai B
-	out PORTB,temp
-
-rcall delay3
-
-rcall  yellow_all
-rcall delay3
-
-rjmp Loop_main
-
-yellow_all:
-		ldi temp, 0b01010101  ;PORTC fanaria E,B, D,A
-		out PORTC,temp
-		ldi temp, 0b01011111  ;PORTA fanaria C kai F
-		out PORTA,temp
-		ldi temp, 0b11110101  ;PORTB pezoi A kai B
-		out PORTB,temp
-		ret
-
-notf1c1:
-	in temp,pina
-	com temp
-	andi temp,0b00001000
-	cpi temp,0b00001000
-	brne notf1
-
-notf1:	;if F1 not pressed
-	;check if C1 pressed;
-	in temp,pina
-	com temp
-	andi temp,0b00000100
-	cpi temp,0b00000100
-	brne pressedB
-
-pressedB:
-	;check if A pressed
-	in temp,PINA
-	andi temp,0b00000001
-	cpi temp,0b00000001
-	brne pressedB
-
-	;A pressed give additional green to pedestrians
-	ldi temp, 0b10100000  ;PORTC fanaria E,B, D,A
-	out PORTC,temp
-
-	ldi temp, 0b00001110  ;PORTA fanaria C kai F
-	out PORTA,temp
-
-	ldi temp, 0b11111001  ;PORTB pezoi A kai B
-	out PORTB,temp
-
-	ldi temp, 0b00000000  ;PORTB pezoi A kai B
+	ldi temp, 0b00000000  ; A12,B12 flashing
 	out PORTD,temp
+	rcall delay_3_seconds
+	rcall check_A12
+	;rjmp select_mode
 	
-	in temp,PINA
-	out PORTC, temp
-	jmp pressedB
+	;rjmp check_A12
 
-	rcall delay3
+select_mode: 
+	cpi which_button, 0
+	breq  check_next_normal_state
+	cpi which_button, 1
+	breq set_state_2
+	cpi which_button, 2
+	breq set_state_1
+	cpi which_button, 3
+	breq set_state_4
+	cpi which_button, 4
+	breq set_state_3
+	
+	rjmp main
+	
 
-	ldi timecounter,10
-	ldi temp,16
+; Traffic Lights:	A,D green 	B,C,E,F red
+; Pedestrians:		A12 red 	B12 green
+load_state_1:
+	ldi temp, 0b00001010  ; E,B red & D,A green
+	out PORTC,temp
+	ldi temp, 0b00001111  ; C,F red
+	out PORTA,temp
+	ldi temp, 0b00010000  ; A12 red & B12 green
+	out PORTD,temp
+
+	ldi overflow_counter, 2
+	start_timer
+	timer_loop_1:
+		cpi overflow_counter,0
+		brne timer_loop_1
+	ret
+
+; Traffic Lights:	E,B green 	A,B,C,D,F red
+; Pedestrians:		A12 green 	B12 red
+load_state_2:
+	ldi temp, 0b10100000  ; E,B green, D,A red
+	out PORTC,temp
+	ldi temp, 0b00001111  ; C,F red
+	out PORTA,temp
+	ldi temp, 0b00100000  ; A12 green & B12 red
+	out PORTD,temp
+
+	ldi overflow_counter, 2
+	start_timer
+	timer_loop_2:
+		cpi overflow_counter,0
+		brne timer_loop_2
+	ret
+
+; Traffic Lights:	E,F green 	A,B,C,D,F red
+; Pedestrians:		A12 red 	B12 red
+load_state_3:
+	ldi temp, 0b10000000  ; E green,B, D,A red
+	out PORTC,temp
+	ldi temp, 0b00101111  ; C red,F green
+	out PORTA,temp
+	ldi temp, 0b00110000  ; A12 red & B12 red
+	out PORTD,temp
+
+	ldi overflow_counter, 2
+	start_timer
+	timer_loop_3:
+		cpi overflow_counter,0
+		brne timer_loop_3
+	ret
+
+; Traffic Lights:	B,C green 	A,D,E,F red
+; Pedestrians:		A12 green 	B12 red
+load_state_4:
+	ldi temp, 0b00100000  ; E red, B green & D,A red
+	out PORTC,temp
+	ldi temp, 0b10001111  ; C green,F red
+	out PORTA,temp
+	ldi temp, 0b00100000  ; A12 green & B12 red
+	out PORTD,temp
+
+	ldi overflow_counter, 2
+	start_timer
+	timer_loop_4:
+		cpi overflow_counter,0
+		brne timer_loop_4
+	ret
+
+; Traffic Lights:	F green 	A,B,C,D,E red
+; Pedestrians:		A12 red 	B12 green
+load_state_5:
+	ldi current_state, 2
+	ldi temp, 0b00000000  ; E,B,D,A red
+	out PORTC,temp
+	ldi temp, 0b00101111  ; C red ,F green
+	out PORTA,temp
+	ldi temp, 0b00010000  ; A12 red & B12 green
+	out PORTD,temp
+
+	ldi overflow_counter, 2
+	start_timer
+	timer_loop_5:
+		cpi overflow_counter,0
+		brne timer_loop_5
+	ret
+
+; =======================================
+; Interrupt and 3sec delay handlers above
+; =======================================
+interrupt_handler:
+	dec overflow_counter
+
+	ldi temp,0xf0
 	out TCNT1H,temp
-	ldi temp,0
+	ldi temp,0x00
 	out TCNT1L,temp
-	xsloopPedsg:
-		cpi timecounter,0
-		brne xsloopPedsg
+
+	; check if any button is pressed
+	in temp, PINA
+	ldi which_button, 1
+	sbrs temp, 0
+	reti					; A12 button is pressed
+	ldi which_button, 2
+	sbrs temp, 0
+	reti					; B12 button is pressed
+	in temp, PINA
+	ldi which_button, 3
+	sbrs temp, 0
+	reti					; C1 button is pressed
+	in temp, PINA
+	ldi which_button, 4
+	sbrs temp, 0
+	reti					; F1 button is pressed
+
+	ldi which_button, 0		;no button is pressed so load 0
+	reti
+
+; A12,B12 flashing
+flash_orange: 
+	in temp, PORTD 
+	com temp
+	andi temp, 0b00110000 	; masking A12 and B12 bits
+	out PORTD,temp
 	ret
 
-;E,F green ## All else red
-strofiF:
-	ldi temp, 0b10000000  ;PORTC fanaria E,B, D,A
-	out PORTC,temp
-	ldi temp, 0b00101111  ;PORTA fanaria C kai F
-	out PORTA,temp
-	ret
-
-;E,F green ## All else red
-strofiFportokali:
-	ldi temp, 0b01000000  ;PORTC fanaria E,B, D,A
-	out PORTC,temp
-	ldi temp, 0b00011111  ;PORTA fanaria C kai F
-	out PORTA,temp
-	rcall delay3sec
-
-
-;##Delays and timers##
-
-;##############################
-;yellow 3 sec for all
-delay3sec:
-; ============================= 
-;    delay loop generator 
-;     12000000 cycles:
-; ----------------------------- 
-; delaying 11999976 cycles:
-          ldi  R17, $3E
-WGLOOP20:  ldi  R18, $FD
-WGLOOP21:  ldi  R19, $FE
-WGLOOP22:  dec  R19
-          brne WGLOOP22
-          dec  R18
-          brne WGLOOP21
-          dec  R17
-          brne WGLOOP20
-; ----------------------------- 
-; delaying 24 cycles:
-          ldi  R17, $08
-WGLOOP23:  dec  R17
-          brne WGLOOP23
-; ============================= 
-ret
-
-delay3:
-    ldi  r18, 122
-    ldi  r19, 193
-    ldi  r20, 130
+delay_3_seconds:
+    ldi  r18, 61
+    ldi  r19, 225
+    ldi  r20, 64
+	rcall flash_orange
 L1: dec  r20
     brne L1
     dec  r19
@@ -200,19 +369,7 @@ L1: dec  r20
     dec  r18
     brne L1
     rjmp PC+1
+    ret
 
-	ret	
+.exit
 
-
-InterruptHandler:
-;each time we are here 1 second has passed
-;decrease only the time counter so the main programm
-;can decide corresponding to it  and return from the
-;interrupt
-
-dec timecounter
-ldi temp,255
-out TCNT1H,temp
-ldi temp,210
-out TCNT1L,temp
-reti
