@@ -7,7 +7,7 @@
 
 ----
 ## 🏀 Usage
-Instruction to run this repo using AVR Studio 4 and ATMEGA16 microcontroller:
+Instructions to run this repo using AVR Studio 4 and ATMEGA16 microcontroller:
 
 1. Create New Project
 2. Choose Atmel **AVR Assembler** project type and set the same of .asm file
