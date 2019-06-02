@@ -1,8 +1,12 @@
 # AVR-traffic-lights
-🚦 AVR project for handling traffic light using interrupts 
+🚦 AVR project for handling traffic light using interrupts.
+
+<p align="center">
+  <img src="./lights.png" alt="diagram of the lights" width="50%"/>
+</p>
 
 ----
-## Usage
+## 🏀 Usage
 Instruction to run this repo using AVR Studio 4 and ATMEGA16 microcontroller:
 
 1. Create New Project
