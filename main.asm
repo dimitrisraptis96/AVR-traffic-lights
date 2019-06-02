@@ -13,13 +13,13 @@
 	out sph, @0
 .endmacro
 
-; Init Timer/Counter Register 1 with 0xf000 = 61440 
-; f=4MHz, prescaler=1024 MAX=65535
-; Thus the delay until overflow is (f - 61440) * prescaler / f = 1sec)
+	; Init Timer/Counter Register 1 with 0xf000 = 61440 
+	; f=4MHz, prescaler=1024 MAX=65535
+	; Thus the delay until overflow is (MAX - 61440) * prescaler / f = 1sec)
 .macro start_timer
 	ldi temp, 0xf0
 	out TCNT1H, temp
-	ldi temp, 0x00
+	ldi temp, 0xbd
 	out TCNT1L, temp
 .endmacro
 
@@ -29,7 +29,7 @@
 .cseg
 .org $0
 rjmp reset
-.org $20
+.org $10
 rjmp interrupt_handler
 
 reset:
@@ -73,8 +73,8 @@ reset:
 	ldi temp, 1<<TOIE1			
 	out TIMSK, temp
 
-	; Devide clock by 1024 & Clear Timer/Counter Register on Compare Match
-	ldi temp, 0b00001101	
+	; Devide clock by 1024 
+	ldi temp, 0b00000101	
 	out TCCR1B, temp
 
 	; Enable Interrupts
@@ -326,7 +326,7 @@ interrupt_handler:
 
 	ldi temp,0xf0
 	out TCNT1H,temp
-	ldi temp,0x00
+	ldi temp,0xbd
 	out TCNT1L,temp
 
 	; check if any button is pressed
@@ -361,7 +361,7 @@ delay_3_seconds:
     ldi  r18, 61
     ldi  r19, 225
     ldi  r20, 64
-	rcall flash_orange
+	rcall flash_orange ; should have used the timer interrupt and call the flash_orange every 1 sec
 L1: dec  r20
     brne L1
     dec  r19
@@ -372,4 +372,3 @@ L1: dec  r20
     ret
 
 .exit
-
